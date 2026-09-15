@@ -1,0 +1,66 @@
+name: Auto mirror upstream
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/auto-sync-upstream.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-mirror-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: sync upstream')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout mirror repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Mirror zhiyingzzhou/renewlet main
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          sync_file=".github/workflows/auto-sync-upstream.yml"
+          sync_backup="${RUNNER_TEMP}/auto-sync-upstream.yml"
+          cp "${sync_file}" "${sync_backup}"
+
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/zhiyingzzhou/renewlet.git
+          git fetch upstream main --tags
+
+          upstream_sha="$(git rev-parse upstream/main)"
+
+          if git merge-base --is-ancestor "${upstream_sha}" HEAD 2>/dev/null; then
+            echo "Already up to date with upstream: ${upstream_sha}"
+            exit 0
+          fi
+
+          git reset --hard "${upstream_sha}"
+
+          mkdir -p "$(dirname "${sync_file}")"
+          cp "${sync_backup}" "${sync_file}"
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to push."
+            exit 0
+          fi
+
+          git commit -m "chore: sync upstream ${upstream_sha:0:12}"
+          git push origin HEAD:main --force-with-lease
