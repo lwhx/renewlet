@@ -1,0 +1,70 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/sync-upstream.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync zhiyingzzhou/renewlet main
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/zhiyingzzhou/renewlet.git
+          git fetch upstream main --tags
+
+          UPSTREAM_SHA="$(git rev-parse upstream/main)"
+
+          if git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD 2>/dev/null; then
+            echo "Already up to date with upstream: $UPSTREAM_SHA"
+            exit 0
+          fi
+
+          # GitHub's Actions token cannot create/update workflow files that
+          # arrive from another repository. Preserve this repository's current
+          # workflows exactly, while syncing all other upstream content.
+          rm -rf /tmp/local-workflows
+          if [ -d .github/workflows ]; then
+            mkdir -p /tmp/local-workflows
+            cp -a .github/workflows/. /tmp/local-workflows/
+          fi
+
+          git reset --hard "$UPSTREAM_SHA"
+
+          rm -rf .github/workflows
+          if [ -d /tmp/local-workflows ]; then
+            mkdir -p .github/workflows
+            cp -a /tmp/local-workflows/. .github/workflows/
+          fi
+
+          git add -A
+
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: preserve local GitHub workflows"
+          fi
+
+          git push origin HEAD:main --force-with-lease
